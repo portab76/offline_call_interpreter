@@ -336,6 +336,7 @@ DEFAULTS = {
     "letra": 16,
     "interfaz": "es",         # idioma de la ventana (Herramientas → Idiomas)
     "mi_voz": "",             # voz grabada con que suena mi traducción ("" = la de Piper)
+    "hablar_auto": False,     # mis frases se dicen traducidas solas al terminarlas
 }
 
 
@@ -1249,6 +1250,17 @@ def run_gui(overrides=None):
         ctk.CTkButton(me_bar, text=text, width=44 if len(text) < 3 else 70,
                       command=cmd).pack(side="right", padx=(8, 0), pady=6)
 
+    def toggle_auto_speak():
+        cfg["hablar_auto"] = bool(auto_speak.get())
+        save_config(cfg)
+
+    # Encendido, cada frase que digo se dice traducida al terminarla (sin pulsar
+    # su muñeco). Las escritas a mano no: esas, con Mayús+Enter o el muñeco.
+    auto_speak = ctk.CTkSwitch(me_bar, text=T("Hablar automáticamente"), command=toggle_auto_speak)
+    if cfg.get("hablar_auto"):
+        auto_speak.select()
+    auto_speak.pack(side="right", padx=(8, 4), pady=6)
+
     def apply_fonts():
         from tkinter import font as tkfont
         n = cfg["letra"]
@@ -1481,7 +1493,8 @@ def run_gui(overrides=None):
             conv.prepare_speech(e)  # con mi voz: convertida ya, suena al pulsar el muñeco
         for d in (corr, live_tr, requested):
             d.pop(e.num, None)
-        speak = e.num in speak_later
+        # Mayús+Enter mientras se decía, o "Hablar automáticamente" (las mías).
+        speak = e.num in speak_later or (e.side == ME and bool(cfg.get("hablar_auto")))
         speak_later.discard(e.num)
         if fixed:
             retranslate(e, changed=True, new=False, speak=speak)

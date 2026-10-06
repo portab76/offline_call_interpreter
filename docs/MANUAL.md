@@ -66,6 +66,8 @@ Los idiomas también se eligen en la ventana, arriba ("Él habla" / "Yo hablo"),
 
 Tu voz traducida **no suena sola**. Debajo del número de cada frase tuya hay un **muñeco hablando**: al pulsarlo se dice su traducción por "Se me escucha por" (en Teams, el cable). Así revisas o corriges la frase antes de que la oiga el otro, y puedes repetir cualquiera cuando quieras.
 
+Con el interruptor **Hablar automáticamente** (abajo, a la izquierda de Borrar) encendido, cada frase que dices se dice traducida en cuanto la terminas, sin pulsar el muñeco; si la corriges mientras la dices, suena ya corregida. Las frases que escribes a mano no se dicen solas (Mayús+Enter o el muñeco).
+
 Al lado del muñeco está el icono de **copiar** (dos hojas): copia la traducción de esa frase al portapapeles para pegarla donde quieras (se pone verde un momento al copiar).
 
 Si pulsas varios muñecos seguidos, se dicen uno detrás de otro. El color del muñeco indica en qué punto está cada frase:

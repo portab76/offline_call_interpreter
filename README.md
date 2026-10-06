@@ -9,7 +9,7 @@ Hablas en tu idioma, el otro te oye en el suyo, y lo que él dice lo lees traduc
 
 - **Nada sale de tu PC.** Reconocimiento, traducción y voz se ejecutan en local: sin cuentas, sin suscripción y sin enviar tus conversaciones a la nube.
 - **Sirve con cualquier aplicación de llamadas**, no solo con una: tu voz traducida entra en la llamada como si fuera un micrófono.
-- **Tú decides qué se dice.** Ves tu frase transcrita y traducida, la corriges con el teclado si hace falta y suena al pulsar su icono.
+- **Tú decides qué se dice.** Ves tu frase transcrita y traducida, la corriges con el teclado si hace falta y suena al pulsar su icono. O activa **Hablar automáticamente** y cada frase se dice sola al terminarla.
 - **Con tu propia voz.** Opcional: grabas 30 segundos y el otro te oye con tu timbre en su idioma.
 - **Va en tarjetas gráficas antiguas**, también AMD e Intel (Vulkan), no solo en NVIDIA. Sin tarjeta compatible, funciona con el procesador.
 
