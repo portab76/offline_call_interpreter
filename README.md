@@ -21,6 +21,18 @@ Hablas en tu idioma, el otro te oye en el suyo, y lo que él dice lo lees traduc
 - Elección del modelo de reconocimiento, con prueba de velocidad en tu equipo.
 - Interfaz en español, inglés o cualquier idioma del catálogo.
 
+## Aceleración por GPU (Vulkan)
+
+El reconocimiento de voz usa **whisper.cpp compilado con Vulkan** (`motor_gpu\`: `whisper-server.exe` + `ggml-vulkan.dll`, ya incluidos). A diferencia de la mayoría de programas de IA, que solo aceleran con NVIDIA (CUDA), funciona con **cualquier tarjeta con controlador Vulkan 1.2**, sin instalar nada aparte del controlador normal. Gasta unas 10 veces menos CPU que hacerlo con el procesador.
+
+| Fabricante | Tarjetas admitidas |
+|---|---|
+| **AMD** | Radeon RX 400 y posteriores (RX 500, 5000, 6000, 7000…), Vega y gráficas integradas Ryzen. Probado en una **RX 580** |
+| **NVIDIA** | GeForce GTX 900 y posteriores, RTX 20/30/40/50 |
+| **Intel** | Arc, Iris Xe y gráficas integradas desde la 6.ª generación |
+
+El modelo `base` necesita unos 300 MB de memoria de vídeo. Si no hay tarjeta compatible, el programa pasa solo al procesador (faster-whisper); con NVIDIA y CUDA 12 instalado también puede usar CUDA.
+
 ## Instalación
 
 1. Descarga el repositorio (**Code → Download ZIP**) y descomprímelo donde lo vayas a usar.
