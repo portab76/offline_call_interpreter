@@ -1,0 +1,10 @@
+faster-whisper>=1.1
+PyAudioWPatch>=0.2.12
+numpy
+scipy
+sentencepiece
+requests
+deep-translator
+customtkinter
+pillow
+piper-tts

@@ -1,0 +1,16 @@
+# Lo que crean la instalación y el uso en cada equipo: no se sube.
+venv/
+modelos/
+transcripciones/
+voces/
+__pycache__/
+*.pyc
+motor_gpu/servidor.log
+
+# Ajustes y datos personales (dispositivos, idiomas añadidos).
+conversacion.json
+idiomas.json
+
+# Idiomas de la interfaz generados en cada equipo: solo se sube el inglés (revisado).
+interfaz/*.json
+!interfaz/en.json
