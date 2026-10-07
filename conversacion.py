@@ -170,6 +170,9 @@ SHORTCUTS = [
         ("Ctrl + V", N_("Pega el portapapeles: en la frase que corriges o en una nueva.")),
         ("Ctrl + C", N_("Copia el texto seleccionado.")),
     ]),
+    (N_("Ventana"), [
+        ("F2", N_("Oculta o muestra las barras de arriba y de abajo (también con ▲ / ▼ junto a ÉL).")),
+    ]),
 ]
 
 # Ayuda de Herramientas → Llamadas: qué hacer para que el otro oiga mi voz traducida.
@@ -337,6 +340,8 @@ DEFAULTS = {
     "interfaz": "es",         # idioma de la ventana (Herramientas → Idiomas)
     "mi_voz": "",             # voz grabada con que suena mi traducción ("" = la de Piper)
     "hablar_auto": False,     # mis frases se dicen traducidas solas al terminarlas
+    "barra_oculta": False,    # barras de arriba y de abajo plegadas (▲ junto a ÉL o F2)
+    "division": 0.5,          # parte del ancho para ÉL (separador entre las columnas)
 }
 
 
@@ -1123,20 +1128,22 @@ def run_gui(overrides=None):
     state = {"ready": False, "speaking": None}
 
     def group(parent):
-        """Recuadro que junta controles relacionados dentro de una barra."""
-        g = ctk.CTkFrame(parent, corner_radius=6)
-        g.pack(side="left", padx=(10, 0), pady=6)
-        return g
+        """Recuadro que junta controles relacionados dentro de una barra
+        (lo coloca layout_top)."""
+        return ctk.CTkFrame(parent, corner_radius=6)
 
     # -- barra superior ---------------------------------------------------- #
     top = ctk.CTkFrame(root, corner_radius=0)
     top.pack(fill="x")
+    # Dos filas: con la ventana estrecha (p. ej. media pantalla con Windows +
+    # flechas) los dispositivos y ⚙ bajan a la segunda. Se crean antes que los
+    # controles para quedar por debajo de ellos (si no, los taparían).
+    top_rows = [ctk.CTkFrame(top, fg_color="transparent") for _ in range(2)]
     # Los nombres dicen de dónde llega su voz ("Llamada"/"Presencial" confundía).
     modes = {"llamada": T("Él suena por el PC"), "presencial": T("Él está a mi lado")}
     mode_codes = {v: k for k, v in modes.items()}
     mode_btn = ctk.CTkSegmentedButton(top, values=list(modes.values()))
     mode_btn.set(modes[cfg["modo"]])
-    mode_btn.pack(side="left", padx=(10, 6), pady=8)
     langs_box = group(top)  # los idiomas de los dos, juntos (en el orden de las columnas)
     ctk.CTkLabel(langs_box, text=T("Él habla")).pack(side="left", padx=(10, 0))
     them_menu = ctk.CTkOptionMenu(langs_box, width=110, values=[names[c] for c in LANGS])
@@ -1162,20 +1169,41 @@ def run_gui(overrides=None):
     mic_menu.pack(side="left", padx=(0, 10), pady=5)
     # Herramientas (ayuda de llamadas, modelos...): al final de la barra.
     gear = ctk.CTkImage(gear_icon("#ffffff", 64), size=(16, 16))
-    ctk.CTkButton(top, text="", image=gear, width=32, command=lambda: show_tools()).pack(
-        side="left", padx=(10, 10), pady=8)
+    gear_btn = ctk.CTkButton(top, text="", image=gear, width=32, command=lambda: show_tools())
+    # (control, padx, pady, fila cuando hay dos)
+    top_items = [(mode_btn, (10, 6), 8, 0), (langs_box, (10, 0), 6, 0),
+                 (out_box, (10, 0), 6, 1), (mic_box, (10, 0), 6, 1), (gear_btn, (10, 10), 8, 1)]
+    top_layout = {"two": None}
+
+    def layout_top(two):
+        if top_layout["two"] == two:
+            return
+        top_layout["two"] = two
+        for w, *_ in top_items:
+            w.pack_forget()
+        for r in top_rows:
+            r.pack_forget()
+        for w, padx, pady, row in top_items:
+            w.pack(in_=top_rows[row if two else 0], side="left", padx=padx, pady=pady)
+        top_rows[0].pack(fill="x")
+        if two:
+            top_rows[1].pack(fill="x")
     # El estado (cargando, escuchando, motor, avisos) va en el título de la ventana.
     root.title(T("Cargando…"))
 
     # -- columnas ---------------------------------------------------------- #
     body = ctk.CTkFrame(root, fg_color="transparent")
     body.pack(fill="both", expand=True, padx=8, pady=(8, 0))
-    body.grid_columnconfigure((0, 1), weight=1, uniform="c")
+    # Columnas 0 (ÉL) y 2 (YO); en la 1, el separador que se arrastra. El ancho
+    # de cada una sale solo de su peso (proporción guardada en "division"): por
+    # eso la cabecera y el texto piden un ancho mínimo y se recortan si no caben.
+    body.grid_columnconfigure((0, 2), uniform="c")
     body.grid_rowconfigure(1, weight=1)
     cols = {}
-    for c, (side, title) in enumerate(((THEM, T("ÉL")), (ME, T("YO")))):
-        head = ctk.CTkFrame(body, fg_color="transparent")
-        head.grid(row=0, column=c, sticky="ew", padx=6)
+    for c, (side, title) in ((0, (THEM, T("ÉL"))), (2, (ME, T("YO")))):
+        head = ctk.CTkFrame(body, fg_color="transparent", width=1, height=WAVE_H + 4)
+        head.pack_propagate(False)
+        head.grid(row=0, column=c, sticky="ew", padx=(6, 0) if c == 0 else (0, 6))
         label = ctk.CTkLabel(head, text=title, font=ctk.CTkFont(size=15, weight="bold"))
         label.pack(side="left")
         flag = ctk.CTkLabel(head, text="")  # bandera del idioma que habla: update_subtitles()
@@ -1194,8 +1222,8 @@ def run_gui(overrides=None):
         # Estado del cancelador de eco (solo en ÉL): se rellena en poll().
         echo_lbl = ctk.CTkLabel(head, text="", text_color="#9aa4b2")
         echo_lbl.pack(side="right", padx=10)
-        box = ctk.CTkTextbox(body, wrap="word", corner_radius=8, border_spacing=10)
-        box.grid(row=1, column=c, sticky="nsew", padx=6, pady=(0, 6))
+        box = ctk.CTkTextbox(body, width=1, height=1, wrap="word", corner_radius=8, border_spacing=10)
+        box.grid(row=1, column=c, sticky="nsew", padx=(6, 0) if c == 0 else (0, 6), pady=(0, 6))
         tb = box._textbox  # tk.Text de debajo: para etiquetas con fuente propia
         tb.mark_set("live", "end-1c")
         tb.mark_gravity("live", "left")
@@ -1203,15 +1231,69 @@ def run_gui(overrides=None):
                       "label": label, "echo": echo_lbl, "flag": flag}
     flags = {c: ctk.CTkImage(flag_image(c), size=(24, 16)) for c in LANGS}
 
+    # Separador entre ÉL y YO: se arrastra para repartir el ancho. Ninguna
+    # columna baja de lo que ocupa su título (▲ ÉL / YO) más un margen.
+    bg = ctk.ThemeManager.theme["CTk"]["fg_color"][1]
+    splitter = tk.Frame(body, width=12, bg=bg, cursor="sb_h_double_arrow")
+    splitter.grid(row=0, column=1, rowspan=2, sticky="ns", pady=(0, 6))
+    split_line = tk.Frame(splitter, width=2, bg=bg, cursor="sb_h_double_arrow")
+    split_line.place(relx=0.5, rely=0, relheight=1, anchor="n")
+    split = {"job": None, "drag": False}
+
+    def min_col(side):
+        head = cols[side]["label"].master
+        first = [w for w in head.pack_slaves() if w.winfo_class() != "Canvas"][:2]
+        return sum(w.winfo_reqwidth() for w in first) + 40
+
+    def apply_split(ratio=None):
+        """Reparte el ancho según la proporción (de ÉL) sin dejar ninguna
+        columna por debajo de su mínimo."""
+        split["job"] = None
+        ratio = cfg["division"] if ratio is None else ratio
+        total = body.winfo_width() - splitter.winfo_width()
+        if total > 1:
+            lo, hi = min_col(THEM) / total, 1 - min_col(ME) / total
+            ratio = min(max(ratio, lo), hi) if lo < hi else 0.5
+        body.grid_columnconfigure(0, weight=max(1, round(ratio * 1000)))
+        body.grid_columnconfigure(2, weight=max(1, round((1 - ratio) * 1000)))
+        return ratio
+
+    def drag_split(event):
+        split["drag"] = True
+        x = event.x_root - body.winfo_rootx()
+        split["ratio"] = x / max(1, body.winfo_width())
+        if not split["job"]:  # como mucho ~30 veces por segundo: el texto se vuelve a partir
+            split["job"] = root.after(33, lambda: split.update(applied=apply_split(split["ratio"])))
+
+    def end_split(event):
+        if not split["drag"]:
+            return
+        split["drag"] = False
+        if split["job"]:
+            root.after_cancel(split["job"])
+        cfg["division"] = apply_split(split.get("ratio", cfg["division"]))
+        save_config(cfg)
+        hover_split(None, False)
+
+    def hover_split(event, on):
+        split_line.configure(bg="#5f6875" if on or split["drag"] else bg)
+
+    for w in (splitter, split_line):
+        w.bind("<B1-Motion>", drag_split)
+        w.bind("<ButtonRelease-1>", end_split)
+        w.bind("<Enter>", lambda e: hover_split(e, True))
+        w.bind("<Leave>", lambda e: hover_split(e, False))
+    # Al cambiar el tamaño de la ventana se mantiene la proporción (y los mínimos).
+    body.bind("<Configure>", lambda e: apply_split(), add="+")
+    apply_split()
+
     # -- barra inferior ---------------------------------------------------- #
     bottom = ctk.CTkFrame(root, corner_radius=0)
-    bottom.pack(fill="x")
-    # Mismas dos columnas que las de arriba: lo de YO queda debajo de YO.
+    # Se coloca antes que las columnas: con la ventana baja encoge el texto, no la barra.
+    bottom.pack(side="bottom", fill="x", before=body)
+    # Todos los controles seguidos, alineados a la izquierda.
     bar = ctk.CTkFrame(bottom, fg_color="transparent")
-    bar.pack(fill="x", padx=8)
-    bar.grid_columnconfigure((0, 1), weight=1, uniform="c")
-    them_bar = ctk.CTkFrame(bar, fg_color="transparent")
-    them_bar.grid(row=0, column=0, sticky="ew", padx=6)
+    bar.pack(fill="x", padx=14)
 
     def toggle_scroll():
         cfg["autoscroll"] = bool(scroll_cb.get())
@@ -1223,12 +1305,10 @@ def run_gui(overrides=None):
 
     # Con él marcado, las dos columnas bajan solas a lo último que se dice.
     # (Para añadir una frase a mano basta con escribir o pegar en su columna.)
-    scroll_cb = ctk.CTkCheckBox(them_bar, text=T("Auto scroll"), command=toggle_scroll)
+    scroll_cb = ctk.CTkCheckBox(bar, text=T("Auto scroll"), command=toggle_scroll)
     if cfg.get("autoscroll", True):
         scroll_cb.select()
     scroll_cb.pack(side="left", pady=6)
-    me_bar = ctk.CTkFrame(bar, fg_color="transparent")
-    me_bar.grid(row=0, column=1, sticky="ew", padx=6)
 
     def font_size(delta):
         cfg["letra"] = max(10, min(40, cfg["letra"] + delta))
@@ -1245,21 +1325,21 @@ def run_gui(overrides=None):
             c["tb"].delete("1.0", "end")
             c["tb"].mark_set("live", "end-1c")
 
-    for text, cmd in (("A+", lambda: font_size(2)), ("A−", lambda: font_size(-2)),
-                      (T("Borrar"), clear)):
-        ctk.CTkButton(me_bar, text=text, width=44 if len(text) < 3 else 70,
-                      command=cmd).pack(side="right", padx=(8, 0), pady=6)
-
     def toggle_auto_speak():
         cfg["hablar_auto"] = bool(auto_speak.get())
         save_config(cfg)
 
     # Encendido, cada frase que digo se dice traducida al terminarla (sin pulsar
     # su muñeco). Las escritas a mano no: esas, con Mayús+Enter o el muñeco.
-    auto_speak = ctk.CTkSwitch(me_bar, text=T("Hablar automáticamente"), command=toggle_auto_speak)
+    auto_speak = ctk.CTkSwitch(bar, text=T("Hablar automáticamente"), command=toggle_auto_speak)
     if cfg.get("hablar_auto"):
         auto_speak.select()
-    auto_speak.pack(side="right", padx=(8, 4), pady=6)
+    auto_speak.pack(side="left", padx=(24, 0), pady=6)
+
+    for text, cmd in ((T("Borrar"), clear), ("A−", lambda: font_size(-2)),
+                      ("A+", lambda: font_size(2))):
+        ctk.CTkButton(bar, text=text, width=44 if len(text) < 3 else 70,
+                      command=cmd).pack(side="left", padx=(8, 0), pady=6)
 
     def apply_fonts():
         from tkinter import font as tkfont
@@ -1320,15 +1400,103 @@ def run_gui(overrides=None):
             for side, key in ((THEM, "el"), (ME, "yo")):
                 cols[side]["sub"].configure(text=T("por el micrófono · se reconoce por hablar {language}",
                                                    language=in_text(cfg[key])))
+        bar_summary.configure(text=f"{lang_name(cfg['el'])} → {lang_name(cfg['yo'])}")
+
+    # Plegar las barras de arriba y de abajo (▲ junto a ÉL o F2): más sitio para el texto con
+    # la ventana pequeña. Plegada, un resumen recuerda los idiomas.
+    bar_btn = ctk.CTkButton(cols[THEM]["label"].master, text="▲", width=24, height=22,
+                            fg_color="transparent", hover_color=("gray75", "gray30"),
+                            text_color="#9aa4b2", command=lambda: toggle_bar())
+    bar_btn.pack(side="left", padx=(0, 6), before=cols[THEM]["label"])
+    bar_summary = ctk.CTkLabel(cols[THEM]["label"].master, text="", text_color="#9aa4b2")
 
     update_subtitles()
 
-    # Ancho de la ventana: lo que ocupa la barra superior (ya con las banderas),
-    # para que no se corte.
-    root.update_idletasks()
-    width = top.winfo_reqwidth() + 10
-    root.minsize(width, 450)
-    root.geometry(f"{width}x700")
+    # Ancho de la ventana: el de la barra superior en una fila (ya con las
+    # banderas). Se puede estrechar hasta lo que ocupa en dos filas, para
+    # compartir la pantalla con otra ventana (Windows + flechas).
+    def bar_width(two):
+        layout_top(two)
+        root.update_idletasks()
+        return max(r.winfo_reqwidth() for r in top_rows) + 10  # píxeles de pantalla
+
+    narrow_px, wide_px = bar_width(True), bar_width(False)
+
+    def fit_top(event):
+        if event.widget is root:
+            layout_top(event.width < wide_px)
+
+    root.bind("<Configure>", fit_top, add="+")
+    scale = ctk.ScalingTracker.get_window_scaling(root)  # minsize/geometry escalan solos
+    # Alto mínimo bajo: con las barras plegadas cabe una franja de subtítulos
+    # debajo de un vídeo.
+    root.minsize(round(narrow_px / scale), 200)
+    root.geometry(f"{round(wide_px / scale)}x700")
+
+    # Plegar/desplegar: las barras de arriba y de abajo cambian de altura poco a
+    # poco (solo la altura: así el texto de las columnas no se vuelve a partir
+    # en cada paso).
+    BAR_STEPS, BAR_MS = 10, 15
+    bar_anim = {"job": None}
+    # (barra, altura completa, dónde va respecto a las columnas)
+    folding = [(top, lambda: sum(r.winfo_reqheight() for r in top_rows if r.winfo_manager()),
+                {"before": body}),
+               (bottom, lambda: bar.winfo_reqheight(), {"side": "bottom", "before": body})]
+
+    def set_bar_height(frame, px):
+        # configure escala la altura: se le pasa sin escalar.
+        frame.configure(height=max(1, px) / ctk.ScalingTracker.get_widget_scaling(frame))
+
+    def show_bar_state(hidden):
+        # Plegada, la cabecera de ÉL dice los idiomas en vez de "capturando…".
+        bar_btn.configure(text="▼" if hidden else "▲")
+        sub = cols[THEM]["sub"]
+        if hidden:
+            sub.pack_forget()
+            bar_summary.pack(side="left", padx=8, after=cols[THEM]["flag"])
+        else:
+            bar_summary.pack_forget()
+            sub.pack(side="left", padx=8, after=cols[THEM]["flag"])
+
+    def toggle_bar(animate=True):
+        if bar_anim["job"]:
+            root.after_cancel(bar_anim["job"])
+            bar_anim["job"] = None
+        hidden = not cfg["barra_oculta"]
+        cfg["barra_oculta"] = hidden
+        save_config(cfg)
+        show_bar_state(hidden)
+        moves = []  # (barra, altura de partida, altura final)
+        for frame, full, where in folding:
+            start = frame.winfo_height() if frame.winfo_manager() else 1
+            if not hidden and not frame.winfo_manager():
+                frame.pack_propagate(False)
+                set_bar_height(frame, 1)
+                frame.pack(fill="x", **where)
+            frame.pack_propagate(False)
+            moves.append((frame, start, 0 if hidden else full()))
+
+        def step(i):
+            t = i / BAR_STEPS
+            ease = 1 - (1 - t) ** 3  # rápido al principio, suave al final
+            for frame, start, end in moves:
+                set_bar_height(frame, round(start + (end - start) * ease))
+            if i < BAR_STEPS:
+                bar_anim["job"] = root.after(BAR_MS, step, i + 1)
+                return
+            bar_anim["job"] = None
+            for frame, *_ in moves:
+                if hidden:
+                    frame.pack_forget()
+                else:
+                    frame.pack_propagate(True)  # vuelve a medir lo que ocupe (una o dos filas)
+
+        step(BAR_STEPS if not animate else 1)
+
+    if cfg.get("barra_oculta"):
+        cfg["barra_oculta"] = False  # toggle_bar lo invierte
+        toggle_bar(animate=False)
+    root.bind("<F2>", lambda e: toggle_bar())
 
     # -- pintar entradas ---------------------------------------------------- #
     entries = {}  # número -> Entry de las frases terminadas (para corregirlas)
