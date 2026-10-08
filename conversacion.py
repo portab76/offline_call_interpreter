@@ -974,7 +974,12 @@ class Conversation:
                      tap=None, leak=None):
             gate_q, st_q = queue.Queue(), queue.Queue()
             gate = Gate(src_q, gate_q, rate, blocked, echo, tap, leak)
-            st = Streamer(self.engine, langs, gate_q, rate, threshold, st_q)
+            # "medir": CSV con los tiempos de cada pasada y palabra (para analizar).
+            measure = None
+            if cfg.get("medir"):
+                measure = os.path.join(BASE_DIR, "transcripciones", datetime.now().strftime(
+                    f"medidas_%Y-%m-%d_%H%M%S_{side or 'los_dos'}"))
+            st = Streamer(self.engine, langs, gate_q, rate, threshold, st_q, measure=measure)
             ch = Channel(self, st_q, side, lang)
             for t in (gate, st, ch):
                 t.start()

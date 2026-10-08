@@ -28,10 +28,12 @@ Uso:
     python transcriptor.py --dispositivo 12
 """
 import argparse
+import csv
 import os
 import queue
 import re
 import threading
+import time
 from collections import deque
 from datetime import datetime
 
@@ -62,6 +64,120 @@ def norm(word):
     return re.sub(r"[^\w']", "", word.lower())
 
 
+SENTENCE_END = (".", "?", "!", "؟", "。", "？", "！")
+ECHO_WORDS = 5   # tantas palabras seguidas iguales a la pista: Whisper la está repitiendo
+
+
+def repeat_at_end(raw):
+    """Palabras de la unidad que se acaba de repetir al final de raw (lista de
+    palabras tal cual), o 0. Es repetición:
+    - una frase de 3 o más palabras dicha dos veces seguidas;
+    - una de 2 palabras dos veces si acaba en punto ("the country. the
+      country."), si no, tres ("80 et 80 et" se respeta);
+    - una palabra suelta 4 veces ("no, no, no" se respeta)."""
+    seq = [norm(w) for w in raw]
+    for n in range(2, min(12, len(seq) // 2) + 1):
+        unit = seq[-n:]
+        if unit != seq[-2 * n:-n] or len(set(unit)) == 1:  # "no no no no": palabra suelta
+            continue
+        if n >= 3 or raw[-1].rstrip().endswith(SENTENCE_END) or seq[-3 * n:-2 * n] == unit:
+            return n
+    if len(seq) >= 4 and len(set(seq[-4:])) == 1:
+        return 1
+    return 0
+
+
+def drop_repeats(done, words):
+    """Las palabras de words que no repiten lo inmediatamente anterior (done:
+    lo ya confirmado). Con Whisper pequeño y habla rápida salen frases
+    duplicadas que, confirmadas, acaban en la pista y se repiten cada vez más."""
+    raw = [w[2] for w in done[-36:]]
+    kept = []
+    for w in words:
+        raw.append(w[2])
+        kept.append(w)
+        n = repeat_at_end(raw)
+        if n:
+            n = min(n, len(kept))  # lo ya confirmado no se puede quitar
+            del raw[-n:], kept[-n:]
+    return kept
+
+
+def has_repeat(raw):
+    """¿Hay alguna repetición seguida (como las de repeat_at_end) en raw?"""
+    return any(repeat_at_end(raw[:i]) for i in range(4, len(raw) + 1))
+
+
+def echoes(words, context):
+    """¿La pasada repite ECHO_WORDS palabras seguidas de la pista? (Whisper la
+    copia en vez de escuchar el audio.)"""
+    got = [norm(w[2]) for w in words]
+    ctx = " " + " ".join(norm(w) for w in context.split()) + " "
+    return any(" " + " ".join(got[i:i + ECHO_WORDS]) + " " in ctx
+               for i in range(len(got) - ECHO_WORDS + 1))
+
+
+def num(x):
+    """Número con coma decimal (para abrir el CSV con Excel en español)."""
+    return f"{x:.2f}".replace(".", ",")
+
+
+class Medidor:
+    """Registro para analizar la transcripción; no cambia nada de lo que hace.
+    Escribe dos CSV (separados por ";"):
+    - <prefijo>_pasadas.csv: una línea por pasada de Whisper.
+    - <prefijo>_palabras.csv: una línea por palabra confirmada (pasa a blanco).
+    Los tiempos cuentan desde que el audio llega al transcriptor (el filtro de
+    voz lo retiene antes ~0,25 s más)."""
+
+    def __init__(self, prefix):
+        self.t0 = time.monotonic()
+        self.files, self.out = [], {}
+        for name, head in (
+                ("pasadas", ["hora_s", "parrafo", "idioma", "bufer_s", "pasada_ms", "palabras_pasada",
+                             "confirmadas", "grises", "motivo", "punto_no_cortado", "punto_en_gris",
+                             "repetidas_quitadas", "pista_vaciada"]),
+                ("palabras", ["hora_s", "parrafo", "palabra", "retraso_s", "gris_s", "motivo"])):
+            f = open(f"{prefix}_{name}.csv", "w", newline="", encoding="utf-8-sig")
+            self.files.append(f)
+            self.out[name] = csv.writer(f, delimiter=";")
+            self.out[name].writerow(head)
+        self.seen = deque(maxlen=200)  # (hora, fin de lo transcrito) de cada pasada
+
+    def now(self):
+        return time.monotonic() - self.t0
+
+    def pasada(self, para, lang, buf_s, secs, hyp, new, grey, motivo, limit, committed,
+               dropped=0, cleared=""):
+        if hyp:
+            self.seen.append((self.now(), hyp[-1][1]))
+        # ¿Había un fin de frase que no cortó? (en lo confirmado, no al final de
+        # la tanda, con la frase ya por encima de SPLIT_WORDS)
+        ends = [i for i, w in enumerate(new) if w[2].rstrip().endswith(SENTENCE_END)]
+        missed = bool(ends) and ends[-1] != len(new) - 1 and committed >= limit
+        in_grey = any(w[2].rstrip().endswith(SENTENCE_END) for w in grey)
+        self.out["pasadas"].writerow([num(self.now()), para, lang or "", num(buf_s), round(secs * 1000),
+                                      len(hyp), len(new), len(grey), motivo,
+                                      "sí" if missed else "", "sí" if in_grey else "",
+                                      dropped or "", cleared])
+        self.files[0].flush()
+
+    def palabras(self, para, words, clock, motivo):
+        """words: (inicio, fin, palabra) en segundos de audio; clock: hora (de
+        time.monotonic) que corresponde al segundo 0 del audio."""
+        now = self.now()
+        for s, e, w in words:
+            heard = clock + e - self.t0
+            first = next((t for t, end in self.seen if end >= e - 0.1), now)
+            self.out["palabras"].writerow([num(now), para, w.strip(), num(now - heard),
+                                           num(max(0.0, now - first)), motivo])
+        self.files[1].flush()
+
+    def close(self):
+        for f in self.files:
+            f.close()
+
+
 # --------------------------------------------------------------------------- #
 # Transcripción continua
 # --------------------------------------------------------------------------- #
@@ -71,8 +187,11 @@ class Streamer(threading.Thread):
     ("words", confirmadas_nuevas, provisionales) y ("para",) al cerrarlo."""
 
     def __init__(self, engine, languages, audio_q, get_rate, threshold, ui_q,
-                 first_para=1):
+                 first_para=1, measure=None):
         super().__init__(daemon=True)
+        # measure: prefijo de los CSV de Medidor (None: no se mide nada).
+        self.meter = Medidor(measure) if measure else None
+        self.clock = time.monotonic()  # hora a la que corresponde el segundo 0 del audio
         self.engine, self.languages = engine, languages
         self.multi = len(languages) > 1
         # Con un solo idioma queda fijo; con varios se decide en cada turno.
@@ -96,13 +215,15 @@ class Streamer(threading.Thread):
         self.last_voice = None     # tiempo de la última voz; None = sin voz pendiente
         self.last_pass = 0         # self.total en la última pasada
         self.committed = []        # palabras confirmadas del párrafo actual
-        self.in_buf = []           # confirmadas cuyo audio sigue en el búfer
+        self.in_buf = []           # (inicio, fin, palabra, ¿se mostró?) cuyo audio sigue en el búfer
         self.commit_end = 0.0      # fin (s) de la última palabra confirmada
         self.prev_hyp = []         # provisionales de la pasada anterior
+        self.recent = []           # últimas mostradas (también de párrafos anteriores): repeticiones
         # Texto ya dicho cuyo audio salió del búfer, para initial_prompt. Lo que
         # sigue en el búfer no puede ir aquí: Whisper lo daría por dicho y se
         # lo saltaría.
         self.context = ""
+        self.dropped, self.cleared = 0, ""  # para Medidor: repeticiones quitadas, pista vaciada
 
     def now(self):
         return self.total / TARGET_SR
@@ -132,6 +253,7 @@ class Streamer(threading.Thread):
             self.total += len(a)
             if rms > self.threshold:
                 self.last_voice = self.now()
+        self.clock = time.monotonic() - self.now()
 
     def _trim(self, t):
         n = int((t - self.buf_t0) * TARGET_SR)
@@ -140,7 +262,7 @@ class Streamer(threading.Thread):
             self.buf_t0 += n / TARGET_SR
             gone = [w for w in self.in_buf if w[0] < self.buf_t0]
             self.in_buf = self.in_buf[len(gone):]
-            self.context += "".join(w[2] for w in gone)
+            self.context += "".join(w[2] for w in gone if w[3])  # sin las repeticiones quitadas
 
     # -- idioma ------------------------------------------------------------ #
     def _guess_language(self):
@@ -191,10 +313,28 @@ class Streamer(threading.Thread):
             return []
         if self.language is None:
             self._detect_language()
+        # La pista (lo último ya dicho) ayuda a Whisper, pero si trae
+        # repeticiones Whisper las copia y entra en bucle: entonces se vacía.
+        prompt = self.context[-200:]
+        if prompt and has_repeat(prompt.split()):
+            self._clear_context("repetición")
+            prompt = ""
         words = self.engine.words(self.buf, self.language,
-                                  self.context[-200:] or START_PROMPT.get(self.language))
-        return [(self.buf_t0 + s, self.buf_t0 + e, w) for s, e, w in words
-                if norm(w)]  # fuera los "." sueltos
+                                  prompt or START_PROMPT.get(self.language))
+        words = [(self.buf_t0 + s, self.buf_t0 + e, w) for s, e, w in words
+                 if norm(w)]  # fuera los "." sueltos
+        if getattr(self.engine, "looped", False):
+            self._clear_context("bucle")  # lo de antes del bucle sí vale
+        elif prompt and echoes(words, prompt):
+            # Copia la pista en vez de escuchar: la pasada no vale; la
+            # siguiente, ya sin pista, escucha el audio.
+            self._clear_context("eco")
+            return []
+        return words
+
+    def _clear_context(self, why):
+        self.context = ""
+        self.cleared = why
 
     def _hypothesis(self):
         """Palabras de la pasada actual que van después de lo ya confirmado."""
@@ -231,12 +371,35 @@ class Streamer(threading.Thread):
         return hyp
 
     # -- párrafos ---------------------------------------------------------- #
-    def _commit(self, words):
+    def _para(self):
+        """Número del párrafo en curso (el del próximo si aún no ha empezado)."""
+        return self.para_no if self.head_pending else self.para_no - 1
+
+    def _measure(self, secs, hyp, new, grey, motivo):
+        if self.meter:
+            limit = SPLIT_WORDS * 3 if self.language in NOSPACE else SPLIT_WORDS
+            self.meter.pasada(self._para(), self.language, len(self.buf) / TARGET_SR, secs, hyp,
+                              new, grey, motivo, limit, len(self.committed),
+                              self.dropped, self.cleared)
+        self.dropped, self.cleared = 0, ""
+
+    def _commit(self, words, motivo="acuerdo"):
+        """Confirma words (su audio queda atrás) y devuelve las que se muestran:
+        sin las que repiten lo inmediatamente anterior."""
         if not words:
-            return
-        self.committed += words
-        self.in_buf += words
+            return []
+        shown = drop_repeats(self.recent, words)
+        self.recent = (self.recent + shown)[-36:]
+        self.dropped += len(words) - len(shown)
+        if self.meter and shown:
+            self.meter.palabras(self._para(), shown, self.clock, motivo)
+        self.committed += shown
+        keep = {id(w) for w in shown}
+        # En el búfer siguen todas (para casar con la pasada siguiente); la
+        # marca dice si pasan a la pista.
+        self.in_buf += [(*w, id(w) in keep) for w in words]
         self.commit_end = words[-1][1]
+        return shown
 
     def _emit(self, new_words):
         if self.head_pending and (new_words or self.prev_hyp):
@@ -263,6 +426,7 @@ class Streamer(threading.Thread):
         if 0 < end < len(self.buf):
             self.buf = self.buf[:end]
             self.last_pass = 0  # hay que volver a transcribir
+        t = time.monotonic()
         if self.total > self.last_pass:
             hyp = self._hypothesis()
         else:
@@ -270,9 +434,10 @@ class Streamer(threading.Thread):
         para = "".join(w[2] for w in self.committed + hyp).strip()
         if not self.committed and para.lower() in HALLUCINATIONS:
             hyp = []
-        self._commit(hyp)
+        shown = self._commit(hyp, "pausa")
+        self._measure(time.monotonic() - t, hyp, hyp, [], "pausa")
         self.prev_hyp = []
-        self._emit(hyp)
+        self._emit(shown)
         self._close_paragraph()
         self.in_buf = []
         self.last_voice = None
@@ -284,6 +449,7 @@ class Streamer(threading.Thread):
 
     def _step(self):
         self.last_pass = self.total
+        t = time.monotonic()  # (la pasada incluye la comprobación del idioma, si toca)
         if (self.multi and self.language is not None
                 and self.now() - self.last_check >= RECHECK_SEC):
             self._recheck_language()
@@ -294,9 +460,10 @@ class Streamer(threading.Thread):
                and norm(hyp[n][2]) == norm(self.prev_hyp[n][2])):
             n += 1
         new = hyp[:n]
-        self._commit(new)
+        shown = self._commit(new)
+        self._measure(time.monotonic() - t, hyp, new, hyp[n:], "acuerdo")
         self.prev_hyp = hyp[n:]
-        self._emit(new)
+        self._emit(shown)
 
         # Sin pausas el párrafo no se cerraría nunca: se cierra al acabar una
         # frase larga para que tenga número propio y se pueda traducir ya.
@@ -309,8 +476,7 @@ class Streamer(threading.Thread):
         length = self.now() - self.buf_t0
         if length > MAX_BUF_SEC:
             rest, self.prev_hyp = self.prev_hyp, []
-            self._commit(rest)
-            self._emit(rest)
+            self._emit(self._commit(rest, "búfer lleno"))
             self._trim(self.commit_end)
         elif length > TRIM_SEC and self.in_buf:
             # Recorta lo ya confirmado para que cada pasada siga siendo rápida:
@@ -342,6 +508,8 @@ class Streamer(threading.Thread):
                     self._step()
             except Exception as e:
                 self.ui_q.put(("status", T("Error transcribiendo: {error}", error=e)))
+        if self.meter:
+            self.meter.close()
 
 
 # --------------------------------------------------------------------------- #

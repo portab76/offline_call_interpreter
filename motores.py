@@ -72,8 +72,10 @@ class MotorCPU:
             initial_prompt=prompt,
         )
         out = []
+        self.looped = False  # ¿se cortó un bucle? (el transcriptor vacía entonces la pista)
         for s in segs:
             if s.compression_ratio > MAX_COMPRESSION:
+                self.looped = True
                 break
             out += [(w.start, w.end, w.word) for w in s.words or []]
         return out
@@ -223,9 +225,11 @@ class MotorGPU:
         j = self._call(audio, language=language, prompt=prompt,
                        no_language_probabilities="true")
         out, text = [], ""
+        self.looped = False  # ¿se cortó un bucle? (el transcriptor vacía entonces la pista)
         for seg in j.get("segments", []):
             text += seg.get("text", "")
             if is_loop(text):
+                self.looped = True
                 break
             if language in NOSPACE:
                 out += char_words(seg)
